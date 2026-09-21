@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import QuickLookThumbnailing
 import UniformTypeIdentifiers
 
@@ -155,20 +156,9 @@ final class ShelfStore: ObservableObject {
     // MARK: - Selection
 
     /// Plain click replaces the selection; ⌘ or ⇧ adds to it, matching Finder.
-    ///
-    /// The pasteboard then mirrors whatever ended up selected. ⌘C cannot do this
-    /// job here: the panel only takes the keyboard on tabs with a field, and
-    /// claiming it for the shelf would dim the window underneath for as long as
-    /// the shelf is open. Picking a card is the whole gesture instead — the
-    /// shelf exists to hand a file onward.
-    ///
-    /// Mirroring, precisely: a ⌘-click that drops one card of three rewrites the
-    /// pasteboard with the remaining two, because a selection on screen that
-    /// disagrees with what would be pasted is worse than either. Only clearing
-    /// the selection entirely leaves the pasteboard alone — an empty write would
-    /// take back what was copied and hand over nothing. A double click passes
-    /// through here first, with `clickCount == 1`, so opening a card copies it
-    /// on the way.
+    /// Selection is deliberately local UI state. Writing file paths or image
+    /// bytes to the system (and potentially Universal) clipboard requires the
+    /// explicit Copy action in the footer or context menu.
     func select(_ item: ShelfItem, modifiers: NSEvent.ModifierFlags) {
         if modifiers.contains(.command) || modifiers.contains(.shift) {
             if selection.contains(item.id) {
@@ -181,7 +171,6 @@ final class ShelfStore: ObservableObject {
         } else {
             selection = [item.id]
         }
-        copySelection()
     }
 
     func isSelected(_ item: ShelfItem) -> Bool { selection.contains(item.id) }
@@ -236,12 +225,44 @@ final class ShelfStore: ObservableObject {
         if urls.count == 1, let url = urls.first,
            let type = UTType(filenameExtension: url.pathExtension),
            type.conforms(to: .image),
-           let data = try? Data(contentsOf: url) {
+           let data = Self.boundedData(at: url, maxBytes: 25 * 1_024 * 1_024) {
             // Declared as what the bytes are, not renamed to TIFF: consumers
             // that trust the declared type would save a "TIFF" with JPEG
             // inside (#9). The UTI is already the pasteboard type identifier.
             pasteboard.setData(data, forType: NSPasteboard.PasteboardType(type.identifier))
         }
+    }
+
+    /// Reads an explicitly copied image without trusting its on-disk length.
+    /// `O_NOFOLLOW` prevents a shelf entry ending in a symlink from turning an
+    /// explicit image copy into a read of some unrelated target. `O_NONBLOCK`
+    /// plus the post-open `fstat` also keeps a FIFO/device from blocking the
+    /// main actor. Chunking with one byte of headroom bounds a growing file.
+    static func boundedData(at url: URL, maxBytes: Int) -> Data? {
+        guard maxBytes > 0, maxBytes < Int.max else { return nil }
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard descriptor >= 0 else { return nil }
+        var status = stat()
+        guard Darwin.fstat(descriptor, &status) == 0,
+              status.st_mode & S_IFMT == S_IFREG else {
+            Darwin.close(descriptor)
+            return nil
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+
+        var data = Data()
+        do {
+            while data.count <= maxBytes {
+                let remaining = maxBytes + 1 - data.count
+                guard let chunk = try handle.read(upToCount: min(64 * 1_024, remaining)),
+                      !chunk.isEmpty else { return data.isEmpty ? nil : data }
+                data.append(chunk)
+            }
+        } catch {
+            return nil
+        }
+        return nil
     }
 
     func open(_ item: ShelfItem) {

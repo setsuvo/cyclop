@@ -47,6 +47,23 @@ final class NotchViewModel: ObservableObject {
         /// live on: with Settings gone there would be no way back.
         var canHide: Bool { self != .settings }
 
+        /// Settings contains no user content and deliberately remains usable
+        /// while every content tab is covered.
+        var privacySection: PrivacyMode.Section? {
+            switch self {
+            case .media: return .media
+            case .shelf: return .shelf
+            case .clipboard: return .clipboard
+            case .snippets: return .snippets
+            case .calendar: return .calendar
+            case .translate: return .translate
+            case .currency: return .currency
+            case .notes: return .notes
+            case .teleprompter: return .teleprompter
+            case .settings: return nil
+            }
+        }
+
         /// Which rail the icon sits on. The left one carries the original six
         /// and is full — icon height is a ceiling now, not a constant (#26,
         /// #27), so a seventh icon would not overflow the panel, but it would
@@ -103,18 +120,32 @@ final class NotchViewModel: ObservableObject {
 
     func setVisible(_ target: Tab, _ visible: Bool) {
         guard target.canHide, isVisible(target) != visible else { return }
+        var requested = hiddenTabs
         if visible {
-            hiddenTabs.remove(target)
-            if started { startBackground(of: target) }
+            requested.remove(target)
         } else {
-            hiddenTabs.insert(target)
-            stopBackground(of: target)
-            // Done before the icon goes, so the pane never shows a tab the rail
-            // no longer has — and `tab`'s own didSet handles what leaving it
-            // means, the teleprompter's suspend included.
-            if tab == target { tab = firstVisibleTab }
+            requested.insert(target)
         }
-        ConfigStore.shared.hiddenTabs = hiddenTabs.map(\.rawValue).sorted()
+
+        // ConfigStore rejects privacy-decreasing changes when the file is
+        // broken or cannot be updated. Mirror its effective answer before
+        // starting any background source.
+        ConfigStore.shared.hiddenTabs = requested.map(\.rawValue).sorted()
+        let effective = Set(ConfigStore.shared.hiddenTabs.compactMap(Tab.init(rawValue:))).filter(\.canHide)
+        let previouslyHidden = hiddenTabs
+        hiddenTabs = effective
+
+        for newlyVisible in previouslyHidden.subtracting(effective) where started {
+            startBackground(of: newlyVisible)
+        }
+        for newlyHidden in effective.subtracting(previouslyHidden) {
+            stopBackground(of: newlyHidden)
+        }
+        if hiddenTabs.contains(tab) {
+            // Done after the effective icon set changes, so the fallback is a
+            // tab that actually remains available.
+            tab = firstVisibleTab
+        }
     }
 
     /// What a tab keeps running while nobody is looking at it. Only a few have
@@ -166,17 +197,6 @@ final class NotchViewModel: ObservableObject {
     }
 
     private var started = false
-
-    /// Whether a click into the panel should hand it the keyboard. The tabs
-    /// that type always do. The teleprompter does only while it has nothing to
-    /// read: an empty script is shown as an editor, and an editor a click
-    /// cannot put a caret into is the field from #53 all over again — the
-    /// hover request on arrival is one chance, and a click has to be the
-    /// second. With a script in it the tab is read, not written, and a click
-    /// on play must not dim the caret of the window underneath.
-    var clickTakesKeyboard: Bool {
-        tab.needsKeyboard || (tab == .teleprompter && teleprompter.script.isEmpty)
-    }
 
     @Published var tab: Tab = .media {
         didSet {
@@ -272,6 +292,7 @@ final class NotchViewModel: ObservableObject {
             shelf.objectWillChange,
             clipboard.objectWillChange,
             calendar.objectWillChange,
+            privacy.objectWillChange,
         ] {
             child
                 .sink { [weak self] _ in
@@ -291,6 +312,9 @@ final class NotchViewModel: ObservableObject {
     }
 
     func start() {
+        Task.detached(priority: .utility) {
+            ScreenshotVault.hardenExistingStorage()
+        }
         shelf.load()
         snippets.reload()
 

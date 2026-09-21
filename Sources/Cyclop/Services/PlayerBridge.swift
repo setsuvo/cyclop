@@ -134,22 +134,49 @@ enum PlayerBridge {
 
     // MARK: - Artwork
 
-    static func artwork(for state: PlayerState, completion: @escaping @MainActor (NSImage?) -> Void) {
+    @discardableResult
+    static func artwork(
+        for state: PlayerState,
+        completion: @escaping @MainActor (NSImage?) -> Void
+    ) -> Task<Void, Never>? {
         switch state.app {
         case .spotify:
-            // The one thing the app ever fetches over the network. The address
-            // comes out of another app's scripting dictionary, so the scheme is
-            // checked: https answers for itself through TLS, while file:// or
-            // some private scheme answers to nobody.
-            guard let url = state.artworkURL, url.scheme?.lowercased() == "https" else {
-                return completion(nil)
+            // The address comes out of another app's scripting dictionary and
+            // is therefore untrusted input. Only Spotify's artwork endpoint is
+            // accepted; the same rule is re-applied after every redirect.
+            let destinations = [
+                NetworkPolicy.Destination(host: "i.scdn.co", pathPrefix: "/image/"),
+            ]
+            guard let url = state.artworkURL,
+                  destinations.contains(where: { $0.allows(url) }) else {
+                completion(nil)
+                return nil
             }
-            // Неизолировано явно — см. `NowPlayingFeed.launch`: то, какой
-            // окажется изоляция без этой пометки, решает версия SDK.
-            URLSession.shared.dataTask(with: url) { @Sendable data, _, _ in
-                let image = data.flatMap(NSImage.init(data:))
-                DispatchQueue.main.async { MainActor.assumeIsolated { completion(image) } }
-            }.resume()
+            return Task {
+                do {
+                    let data = try await NetworkPolicy.load(
+                        URLRequest(url: url),
+                        destinations: destinations,
+                        maxBytes: 8 * 1_024 * 1_024,
+                        contentTypes: ["image/jpeg", "image/png", "image/webp"]
+                    )
+                    try Task.checkCancellation()
+                    guard ImagePolicy.accepts(
+                        data,
+                        maxBytes: 8 * 1_024 * 1_024,
+                        maxPixels: 20_000_000,
+                        maxFrames: 1
+                    ) else {
+                        return completion(nil)
+                    }
+                    try Task.checkCancellation()
+                    completion(NSImage(data: data))
+                } catch is CancellationError {
+                    return
+                } catch {
+                    completion(nil)
+                }
+            }
         case .music:
             runScript("""
             tell application id "com.apple.Music"
@@ -157,9 +184,16 @@ enum PlayerBridge {
                 return raw data of artwork 1 of current track
             end tell
             """) { descriptor in
-                guard let data = descriptor?.data, !data.isEmpty else { return completion(nil) }
+                guard let data = descriptor?.data,
+                      ImagePolicy.accepts(
+                        data,
+                        maxBytes: 8 * 1_024 * 1_024,
+                        maxPixels: 20_000_000,
+                        maxFrames: 1
+                      ) else { return completion(nil) }
                 completion(NSImage(data: data))
             }
+            return nil
         }
     }
 
@@ -208,18 +242,39 @@ enum PlayerBridge {
     }
 
     private static func parse(_ raw: String, app: PlayerApp) -> PlayerState? {
+        guard raw.utf8.count <= 32 * 1_024 else { return nil }
         let parts = raw.components(separatedBy: "\u{1}")
         guard parts.count >= 6, !parts[1].isEmpty else { return nil }
+        let duration = boundedNumber(parts[4], maximum: 315_576_000)
+        let position = boundedNumber(parts[5], maximum: 315_576_000)
+        let artwork = parts.count > 6 && parts[6].utf8.count <= 2_048
+            ? URL(string: parts[6])
+            : nil
         return PlayerState(
             app: app,
             isPlaying: parts[0].lowercased() == "playing",
-            title: parts[1],
-            artist: parts[2],
-            album: parts[3],
-            duration: (Double(parts[4]) ?? 0) / 1000,
-            position: (Double(parts[5]) ?? 0) / 1000,
-            artworkURL: parts.count > 6 ? URL(string: parts[6]) : nil
+            title: boundedText(parts[1]),
+            artist: boundedText(parts[2]),
+            album: boundedText(parts[3]),
+            duration: duration / 1_000,
+            position: position / 1_000,
+            artworkURL: artwork
         )
+    }
+
+    private static let unsafeTextControls = CharacterSet(
+        charactersIn: "\u{200E}\u{200F}\u{202A}\u{202B}\u{202C}\u{202D}\u{202E}\u{2066}\u{2067}\u{2068}\u{2069}"
+    ).union(.controlCharacters)
+
+    private static func boundedText(_ value: String) -> String {
+        let scalars = value.unicodeScalars.lazy.filter { !unsafeTextControls.contains($0) }
+        return String(String.UnicodeScalarView(scalars.prefix(512)))
+    }
+
+    private static func boundedNumber(_ value: String, maximum: Double) -> Double {
+        guard let number = Double(value), number.isFinite,
+              number >= 0, number <= maximum * 1_000 else { return 0 }
+        return number
     }
 
     /// Shared AppleScript runner: one serial queue for every script the app sends.

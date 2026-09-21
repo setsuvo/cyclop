@@ -169,7 +169,7 @@ final class NowPlayingFeed {
             handle(line: Data(line))
         }
         // Guard against a runaway line if the helper ever misbehaves.
-        if buffer.count > 4_000_000 { buffer.removeAll() }
+        if buffer.count > Self.maxJSONLineBytes { buffer.removeAll() }
     }
 
     /// Now Playing metadata is neither ours nor the user's: a browser tab fills
@@ -180,6 +180,7 @@ final class NowPlayingFeed {
     /// to the system image decoder.
     private static let maxTextLength = 512
     private static let maxArtworkBytes = 4 * 1024 * 1024
+    private static let maxJSONLineBytes = 6 * 1024 * 1024
     private static let bidiControls = CharacterSet(
         charactersIn: "\u{200E}\u{200F}\u{202A}\u{202B}\u{202C}\u{202D}\u{202E}\u{2066}\u{2067}\u{2068}\u{2069}"
     )

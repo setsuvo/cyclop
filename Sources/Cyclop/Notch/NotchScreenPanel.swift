@@ -41,6 +41,7 @@ final class NotchScreenPanel {
 
     func teardown() {
         pointer.stop()
+        state.endPrivacySession()
         closeActiveRectWork?.cancel()
         cancellables.removeAll()
         panel?.acceptsKeyboard = false
@@ -127,7 +128,7 @@ final class NotchScreenPanel {
         // Clicking away drops the keyboard but leaves the tab where it was, so
         // a click back into the panel has to be able to ask for it again.
         panel.onPress = { [weak self] in
-            guard let self, vm.clickTakesKeyboard else { return }
+            guard let self, state.clickTakesKeyboard else { return }
             state.wantsKeyboard = true
         }
 

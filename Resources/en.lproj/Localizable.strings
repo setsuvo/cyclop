@@ -26,7 +26,7 @@
 "Full-Height Notch Without a Cutout" = "Full-Height Notch Without a Cutout";
 
 "Screenshots" = "Screenshots";
-"Save Clipboard Screenshots" = "Save Clipboard Screenshots";
+"Save Clipboard Images" = "Save Clipboard Images";
 "Watch Screenshots Folder" = "Watch Screenshots Folder";
 "Choose Screenshots Folder" = "Choose Screenshots Folder";
 "Cyclop will watch this folder for new screenshots and add them to the shelf." = "Cyclop will watch this folder for new screenshots and add them to the shelf.";
@@ -39,6 +39,7 @@
 "Configuration" = "Configuration";
 "Show Config File" = "Show Config File";
 "config.json is broken — click to open; nothing is overwritten" = "config.json is broken — click to open; nothing is overwritten";
+"config.json could not be saved — privacy-safe fallbacks remain active" = "config.json could not be saved — privacy-safe fallbacks remain active";
 
 "Cyclop" = "Cyclop";
 "Quit Cyclop" = "Quit Cyclop";

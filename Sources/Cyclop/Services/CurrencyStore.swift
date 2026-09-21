@@ -33,8 +33,10 @@ final class CurrencyStore: ObservableObject {
         didSet {
             guard sourceCode != oldValue else { return }
             persistPair()
-            Task { await refreshRates(force: true) }
-            if !suppressSideEffects { recompute(from: .source) }
+            if !suppressSideEffects {
+                scheduleRefresh(force: true)
+                recompute(from: .source)
+            }
         }
     }
 
@@ -50,6 +52,9 @@ final class CurrencyStore: ObservableObject {
     @Published var targetText = ""
 
     private var timer: Timer?
+    /// The currency tab is optional. Keep its network work cancellable so
+    /// hiding or stopping the tab also stops requests already in flight.
+    private var networkTask: Task<Void, Never>?
     private var editing: Side = .source
     /// Quiet while both ends of a swap are rewritten, so the intermediate
     /// equal-codes moment never fires a convert against the wrong rate table.
@@ -58,19 +63,16 @@ final class CurrencyStore: ObservableObject {
     private let defaults = UserDefaults.standard
     private let sourceKey = "currency.source"
     private let targetKey = "currency.target"
-    /// Own session rather than `URLSession.shared`: jsDelivr sends
-    /// `max-age=604800` on these files, and the shared cache would keep
-    /// serving yesterday's rates for a week no matter how often we "refresh".
-    private let session: URLSession = {
-        let config = URLSessionConfiguration.ephemeral
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        config.urlCache = nil
-        config.timeoutIntervalForRequest = 20
-        return URLSession(configuration: config)
-    }()
-
     private static let primaryHost = "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1"
     private static let fallbackHost = "https://latest.currency-api.pages.dev/v1"
+    private static let networkDestinations = [
+        NetworkPolicy.Destination(
+            host: "cdn.jsdelivr.net",
+            pathPrefix: "/npm/@fawazahmed0/currency-api@latest/v1/"
+        ),
+        NetworkPolicy.Destination(host: "latest.currency-api.pages.dev", pathPrefix: "/v1/"),
+    ]
+    private static let maxResponseBytes = 2 * 1_024 * 1_024
 
     init() {
         let savedSource = defaults.string(forKey: sourceKey)?.lowercased()
@@ -94,10 +96,10 @@ final class CurrencyStore: ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
-        Task { await bootstrap() }
+        scheduleBootstrap()
         timer?.invalidate()
         let timer = Timer(timeInterval: refreshInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.refreshRates(force: true) }
+            MainActor.assumeIsolated { self?.scheduleRefresh(force: true) }
         }
         // Common Mode, not just the default one: while a tracking loop or a
         // scroll is running the default mode pauses, and a currency refresh
@@ -109,13 +111,15 @@ final class CurrencyStore: ObservableObject {
     func stop() {
         timer?.invalidate()
         timer = nil
+        networkTask?.cancel()
+        networkTask = nil
     }
 
     /// Opening the tab always asks the network again. Skipping when a table is
     /// already in memory is what made yesterday's rates look permanent: the
     /// timer alone is not enough if the app was quit overnight.
     func refreshIfNeeded() {
-        Task { await refreshRates(force: true) }
+        scheduleRefresh(force: true)
     }
 
     // MARK: - Amounts
@@ -162,6 +166,20 @@ final class CurrencyStore: ObservableObject {
 
     // MARK: - Networking
 
+    private func scheduleBootstrap() {
+        networkTask?.cancel()
+        networkTask = Task { [weak self] in
+            await self?.bootstrap()
+        }
+    }
+
+    private func scheduleRefresh(force: Bool) {
+        networkTask?.cancel()
+        networkTask = Task { [weak self] in
+            await self?.refreshRates(force: force)
+        }
+    }
+
     private func bootstrap() async {
         isLoading = true
         defer { isLoading = false }
@@ -170,6 +188,8 @@ final class CurrencyStore: ObservableObject {
             try await loadRates(for: sourceCode)
             failure = nil
             recompute(from: editing)
+        } catch is CancellationError {
+            return
         } catch {
             failure = error.localizedDescription
         }
@@ -182,6 +202,8 @@ final class CurrencyStore: ObservableObject {
             try await loadRates(for: sourceCode)
             failure = nil
             recompute(from: editing)
+        } catch is CancellationError {
+            return
         } catch {
             // Keep whatever rates we already have; only surface the error when
             // there is nothing to convert with.
@@ -207,6 +229,11 @@ final class CurrencyStore: ObservableObject {
     private func loadCurrencies() async throws {
         let data = try await fetch("currencies.min.json")
         let decoded = try JSONDecoder().decode([String: String].self, from: data)
+        guard !decoded.isEmpty, decoded.count <= 5_000,
+              decoded.allSatisfy({ Self.isValidCurrencyCode($0.key) && $0.value.utf8.count <= 256 }) else {
+            throw NetworkPolicy.Failure.invalidResponse
+        }
+        try Task.checkCancellation()
         currencies = decoded
             .map { Currency(code: $0.key.lowercased(), name: $0.value.isEmpty ? $0.key.uppercased() : $0.value) }
             .sorted {
@@ -221,7 +248,10 @@ final class CurrencyStore: ObservableObject {
                 return $0.code < $1.code
             }
         if !currencies.contains(where: { $0.code == sourceCode }) {
+            let wasSuppressed = suppressSideEffects
+            suppressSideEffects = true
             sourceCode = currencies.first?.code ?? "usd"
+            suppressSideEffects = wasSuppressed
         }
         if !currencies.contains(where: { $0.code == targetCode }) {
             targetCode = currencies.first { $0.code != sourceCode }?.code ?? "eur"
@@ -230,18 +260,28 @@ final class CurrencyStore: ObservableObject {
 
     private func loadRates(for base: String) async throws {
         let code = base.lowercased()
+        guard Self.isValidCurrencyCode(code) else { throw NetworkPolicy.Failure.invalidResponse }
         let data = try await fetch("currencies/\(code).min.json")
-        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        let date = object?["date"] as? String
-        let table = object?[code] as? [String: Any] ?? [:]
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let date = object["date"] as? String,
+              Self.isValidDateStamp(date),
+              let table = object[code] as? [String: Any],
+              !table.isEmpty, table.count <= 5_000 else {
+            throw NetworkPolicy.Failure.invalidResponse
+        }
         var parsed: [String: Double] = [code: 1]
         for (key, value) in table {
-            if let number = value as? Double {
-                parsed[key.lowercased()] = number
-            } else if let number = value as? NSNumber {
-                parsed[key.lowercased()] = number.doubleValue
+            let normalizedKey = key.lowercased()
+            guard Self.isValidCurrencyCode(normalizedKey),
+                  let number = value as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.isFinite,
+                  number.doubleValue > 0 else {
+                throw NetworkPolicy.Failure.invalidResponse
             }
+            parsed[normalizedKey] = number.doubleValue
         }
+        try Task.checkCancellation()
         rates = parsed
         rateBase = code
         rateDate = date
@@ -258,16 +298,40 @@ final class CurrencyStore: ObservableObject {
             request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
             request.setValue("no-cache", forHTTPHeaderField: "Pragma")
             do {
-                let (data, response) = try await session.data(for: request)
-                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                    throw URLError(.badServerResponse)
-                }
-                return data
+                return try await NetworkPolicy.load(
+                    request,
+                    destinations: Self.networkDestinations,
+                    maxBytes: Self.maxResponseBytes,
+                    contentTypes: ["application/json"]
+                )
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 lastError = error
             }
         }
         throw lastError ?? URLError(.cannotConnectToHost)
+    }
+
+    static func isValidCurrencyCode(_ value: String) -> Bool {
+        let bytes = value.lowercased().utf8
+        return (1...16).contains(bytes.count) && bytes.allSatisfy {
+            (48...57).contains($0) || (97...122).contains($0)
+        }
+    }
+
+    static func isValidDateStamp(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard bytes.count == 10, bytes[4] == 45, bytes[7] == 45,
+              bytes.enumerated().allSatisfy({ index, byte in
+                  index == 4 || index == 7 || (48...57).contains(byte)
+              }) else { return false }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        return formatter.date(from: value) != nil
     }
 
     // MARK: - Conversion

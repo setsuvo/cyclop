@@ -67,7 +67,7 @@ struct SettingsPane: View {
                 section(localized("Screenshots")) {
                     toggleRow(
                         symbol: "photo.on.rectangle",
-                        title: localized("Save Clipboard Screenshots"),
+                        title: localized("Save Clipboard Images"),
                         isOn: saveClipboardImagesBinding
                     )
                     toggleRow(
@@ -104,6 +104,7 @@ struct SettingsPane: View {
                 // of five.
                 section(localized("Configuration")) {
                     if config.fileBroken { configBrokenNotice }
+                    if config.writeFailed { configWriteFailedNotice }
                     actionRow(symbol: "gearshape", title: localized("Show Config File")) {
                         ConfigStore.reveal()
                     }
@@ -185,8 +186,10 @@ struct SettingsPane: View {
         Binding(
             get: { saveClipboardImages },
             set: { wants in
-                saveClipboardImages = wants
                 NotchViewModel.saveClipboardImagesEnabled = wants
+                // Enabling is deliberately rejected when config.json cannot
+                // be made durable; mirror the effective value, not the click.
+                saveClipboardImages = NotchViewModel.saveClipboardImagesEnabled
             }
         )
     }
@@ -198,8 +201,11 @@ struct SettingsPane: View {
         Binding(
             get: { allDisplays },
             set: { wants in
-                allDisplays = wants
                 NotchGeometry.showsOnAllDisplays = wants
+                // Enabling is rejected if config.json cannot be made durable.
+                // Reflect the effective setting rather than leaving a switch
+                // that claims a privacy-relevant change succeeded.
+                allDisplays = NotchGeometry.showsOnAllDisplays
             }
         )
     }
@@ -225,7 +231,10 @@ struct SettingsPane: View {
             get: { watchScreenshotFolder },
             set: { wants in
                 if wants {
-                    screenshots.requestAccess { granted in watchScreenshotFolder = granted }
+                    screenshots.requestAccess(
+                        startWatching: { vm.isVisible(.shelf) },
+                        completion: { granted in watchScreenshotFolder = granted }
+                    )
                 } else {
                     screenshots.disable()
                     watchScreenshotFolder = false
@@ -290,6 +299,24 @@ struct SettingsPane: View {
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(Color.yellow.opacity(0.85))
             Text(localized("config.json is broken — click to open; nothing is overwritten"))
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture { ConfigStore.reveal() }
+        .padding(.horizontal, 8)
+        .frame(height: 26)
+    }
+
+    private var configWriteFailedNotice: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Color.yellow.opacity(0.85))
+            Text(localized("config.json could not be saved — privacy-safe fallbacks remain active"))
                 .font(.system(size: 10))
                 .foregroundStyle(Theme.secondary)
                 .lineLimit(1)

@@ -16,6 +16,7 @@
 
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
+#import <math.h>
 
 typedef void (*MRGetInfoFn)(dispatch_queue_t, void (^)(CFDictionaryRef));
 typedef void (*MRGetBoolFn)(dispatch_queue_t, void (^)(Boolean));
@@ -34,6 +35,42 @@ static MRGetCommandsForPlayerFn sGetCommandsForPlayer;
 static int sOwnerPID;
 static dispatch_queue_t sQueue;
 static NSString *sArtworkID;
+
+// MediaSession metadata can be supplied by a web page, so the helper treats
+// everything returned by MediaRemote as untrusted. These limits apply before
+// base64 encoding and JSON serialization, where an oversized value would
+// otherwise be copied and expanded again inside the privileged host process.
+static const NSUInteger kMaxTextLength = 512;
+static const NSUInteger kMaxCommands = 128;
+static const NSUInteger kMaxArtworkBytes = 4 * 1024 * 1024;
+static const NSUInteger kMaxJSONBytes = 6 * 1024 * 1024;
+
+static NSString *boundedString(id value) {
+    if (![value isKindOfClass:NSString.class]) return @"";
+    NSString *string = value;
+    if (string.length <= kMaxTextLength) return string;
+
+    // Avoid cutting between a UTF-16 surrogate pair. The Swift reader applies
+    // its own scalar/control-character policy as a second line of defence.
+    NSUInteger end = kMaxTextLength;
+    unichar last = [string characterAtIndex:end - 1];
+    if (CFStringIsSurrogateHighCharacter(last) &&
+        end < string.length &&
+        CFStringIsSurrogateLowCharacter([string characterAtIndex:end])) {
+        end--;
+    }
+    return [string substringToIndex:end];
+}
+
+static NSNumber *boundedNumber(id value, double minimum, double maximum) {
+    if (![value isKindOfClass:NSNumber.class] ||
+        CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID()) {
+        return @0;
+    }
+    double number = [(NSNumber *)value doubleValue];
+    if (!isfinite(number) || number < minimum || number > maximum) return @0;
+    return @(number);
+}
 
 static NSString *const kMediaRemotePath =
     @"/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote";
@@ -56,7 +93,7 @@ static id activePlayerPath(void);
 
 static void emit(NSDictionary *payload) {
     NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:NULL];
-    if (!json) return;
+    if (!json || json.length > kMaxJSONBytes) return;
     fwrite(json.bytes, 1, json.length, stdout);
     fputc('\n', stdout);
     fflush(stdout);
@@ -84,16 +121,33 @@ static void refreshCommands(void) {
     id path = activePlayerPath();
     if (!path) return;
     sGetCommandsForPlayer(path, sQueue, ^(NSArray *infos) {
+        if (![infos isKindOfClass:NSArray.class]) {
+            sCommands = nil;
+            return;
+        }
         NSMutableArray *codes = [NSMutableArray array];
+        NSUInteger inspected = 0;
         for (id info in infos) {
-            id code = [info valueForKey:@"command"];
-            id enabled = [info valueForKey:@"enabled"];
+            if (inspected++ >= kMaxCommands) break;
+            if (![info respondsToSelector:@selector(valueForKey:)]) continue;
+            id code = nil;
+            id enabled = nil;
+            @try {
+                code = [info valueForKey:@"command"];
+                enabled = [info valueForKey:@"enabled"];
+            } @catch (__unused NSException *exception) {
+                continue;
+            }
             // A command can be listed and still be off right now. Only what is
             // both listed and enabled counts as offered.
-            if ([code isKindOfClass:NSNumber.class] &&
-                (enabled == nil || [enabled boolValue])) {
-                [codes addObject:code];
-            }
+            if (![code isKindOfClass:NSNumber.class] ||
+                CFGetTypeID((__bridge CFTypeRef)code) == CFBooleanGetTypeID()) continue;
+            double command = [(NSNumber *)code doubleValue];
+            BOOL isEnabled = enabled == nil ||
+                ([enabled isKindOfClass:NSNumber.class] && [(NSNumber *)enabled boolValue]);
+            if (!isfinite(command) || command < 0 || command > INT_MAX ||
+                floor(command) != command || !isEnabled) continue;
+            [codes addObject:@((int)command)];
         }
         sCommands = codes;
     });
@@ -113,8 +167,9 @@ static void publish(void) {
     refreshCommands();
     sGetIsPlaying(sQueue, ^(Boolean playing) {
         sGetInfo(sQueue, ^(CFDictionaryRef raw) {
-            NSDictionary *info = (__bridge NSDictionary *)raw;
-            NSString *title = info[@"kMRMediaRemoteNowPlayingInfoTitle"] ?: @"";
+            id rawObject = (__bridge id)raw;
+            NSDictionary *info = [rawObject isKindOfClass:NSDictionary.class] ? rawObject : @{};
+            NSString *title = boundedString(info[@"kMRMediaRemoteNowPlayingInfoTitle"]);
 
             NSMutableDictionary *out = [NSMutableDictionary dictionary];
             // `playing ? @YES : @NO`, not `@(playing ? YES : NO)`: in C the
@@ -124,21 +179,37 @@ static void publish(void) {
             // describing a flag as a count.
             out[@"playing"] = playing ? @YES : @NO;
             out[@"title"] = title;
-            out[@"artist"] = info[@"kMRMediaRemoteNowPlayingInfoArtist"] ?: @"";
-            out[@"album"] = info[@"kMRMediaRemoteNowPlayingInfoAlbum"] ?: @"";
-            out[@"duration"] = info[@"kMRMediaRemoteNowPlayingInfoDuration"] ?: @0;
-            out[@"elapsed"] = info[@"kMRMediaRemoteNowPlayingInfoElapsedTime"] ?: @0;
-            out[@"rate"] = info[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"] ?: @0;
-            out[@"pid"] = @(sOwnerPID);
+            out[@"artist"] = boundedString(info[@"kMRMediaRemoteNowPlayingInfoArtist"]);
+            out[@"album"] = boundedString(info[@"kMRMediaRemoteNowPlayingInfoAlbum"]);
+            out[@"duration"] = boundedNumber(
+                info[@"kMRMediaRemoteNowPlayingInfoDuration"], 0, 315576000
+            );
+            out[@"elapsed"] = boundedNumber(
+                info[@"kMRMediaRemoteNowPlayingInfoElapsedTime"], 0, 315576000
+            );
+            out[@"rate"] = boundedNumber(
+                info[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"], -128, 128
+            );
+            out[@"pid"] = sOwnerPID > 0 ? @(sOwnerPID) : @0;
 
             id stamp = info[@"kMRMediaRemoteNowPlayingInfoTimestamp"];
-            out[@"timestamp"] = [stamp isKindOfClass:NSDate.class]
-                ? @([(NSDate *)stamp timeIntervalSince1970])
+            NSTimeInterval timestamp = [stamp isKindOfClass:NSDate.class]
+                ? [(NSDate *)stamp timeIntervalSince1970]
+                : 0;
+            out[@"timestamp"] = isfinite(timestamp) &&
+                timestamp >= 0 && timestamp <= 32503680000
+                ? @(timestamp)
                 : @0;
 
-            NSString *artworkID = info[@"kMRMediaRemoteNowPlayingInfoArtworkIdentifier"] ?: title;
-            NSData *artwork = info[@"kMRMediaRemoteNowPlayingInfoArtworkData"];
-            if (artwork.length > 0 && ![artworkID isEqualToString:sArtworkID]) {
+            NSString *artworkID = boundedString(
+                info[@"kMRMediaRemoteNowPlayingInfoArtworkIdentifier"]
+            );
+            if (artworkID.length == 0) artworkID = title;
+            id artworkValue = info[@"kMRMediaRemoteNowPlayingInfoArtworkData"];
+            NSData *artwork = [artworkValue isKindOfClass:NSData.class] ? artworkValue : nil;
+            if (artwork.length > 0 &&
+                artwork.length <= kMaxArtworkBytes &&
+                ![artworkID isEqualToString:sArtworkID]) {
                 out[@"artwork"] = [artwork base64EncodedStringWithOptions:0];
                 sArtworkID = artworkID;
             }

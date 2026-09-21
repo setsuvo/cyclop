@@ -45,9 +45,10 @@ final class ClipboardStore: ObservableObject {
     /// Whether images are worth reading at all. Asked before the TIFF → PNG
     /// encode, not after: with screenshot saving switched off, a copied picture
     /// would otherwise be encoded in full and then thrown away.
-    var wantsImages: () -> Bool = { true }
+    var wantsImages: () -> Bool = { false }
 
     private var timer: Timer?
+    private(set) var isRunning = false
     private var lastChangeCount = NSPasteboard.general.changeCount
     private let limit = 40
     /// Types an app sets to keep a copy out of history tools. Presence is what
@@ -63,6 +64,7 @@ final class ClipboardStore: ObservableObject {
 
     func start() {
         stop()
+        isRunning = true
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
@@ -75,6 +77,7 @@ final class ClipboardStore: ObservableObject {
     }
 
     func stop() {
+        isRunning = false
         timer?.invalidate()
         timer = nil
     }
@@ -106,6 +109,7 @@ final class ClipboardStore: ObservableObject {
     }
 
     private func poll() {
+        guard isRunning else { return }
         let pasteboard = NSPasteboard.general
         guard pasteboard.changeCount != lastChangeCount else { return }
         lastChangeCount = pasteboard.changeCount
@@ -124,26 +128,25 @@ final class ClipboardStore: ObservableObject {
         }
 
         if wantsImages() {
-            if let png = pngFromPasteboard(pasteboard) {
+            switch imageFromPasteboard(pasteboard) {
+            case .ready(let png):
                 onImage?(png)
                 return
-            }
-
+            case .pending:
             // A copy made on the phone arrives in two parts: macOS puts the
             // type on the pasteboard the moment the phone announces it, and
             // the picture itself is still coming over the air. So the counter
             // can move while there are no bytes to read yet — and reading once
             // would drop the screenshot for good, because the counter has
             // already been marked as seen. Wait for it instead.
-            if pasteboard.availableType(from: [.png, .tiff]) != nil {
                 awaitImage(at: pasteboard.changeCount, attempt: 0)
                 return
+            case .rejected, .absent:
+                break
             }
         }
 
-        guard let string = pasteboard.string(forType: .string),
-              !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        record(ClipItem(payload: .text(string), date: Date()))
+        recordText(from: pasteboard)
     }
 
     /// Checks back until the promised picture has actually arrived.
@@ -153,37 +156,97 @@ final class ClipboardStore: ObservableObject {
     /// transfer the user has already replaced would put the wrong thing on the
     /// shelf.
     private func awaitImage(at changeCount: Int, attempt: Int) {
+        guard isRunning else { return }
+        guard wantsImages() else {
+            let pasteboard = NSPasteboard.general
+            if pasteboard.changeCount == changeCount { recordText(from: pasteboard) }
+            return
+        }
         // Out of patience. Something declared a picture and never produced one,
         // so fall back to what else was on the pasteboard — otherwise a copy
         // that merely offered an image alongside its text would go unrecorded.
         guard attempt < 12 else {
             let pasteboard = NSPasteboard.general
-            guard pasteboard.changeCount == changeCount,
-                  let string = pasteboard.string(forType: .string),
-                  !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            record(ClipItem(payload: .text(string), date: Date()))
+            if pasteboard.changeCount == changeCount { recordText(from: pasteboard) }
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 let pasteboard = NSPasteboard.general
-                guard pasteboard.changeCount == changeCount else { return }
-                if let png = self.pngFromPasteboard(pasteboard) {
-                    self.onImage?(png)
+                guard self.isRunning, pasteboard.changeCount == changeCount else { return }
+                guard self.wantsImages() else {
+                    self.recordText(from: pasteboard)
                     return
                 }
-                self.awaitImage(at: changeCount, attempt: attempt + 1)
+                switch self.imageFromPasteboard(pasteboard) {
+                case .ready(let png):
+                    self.onImage?(png)
+                case .pending:
+                    self.awaitImage(at: changeCount, attempt: attempt + 1)
+                case .rejected, .absent:
+                    self.recordText(from: pasteboard)
+                }
             }
         }
     }
 
-    /// Screenshots land as PNG; other apps often offer only TIFF.
-    private func pngFromPasteboard(_ pasteboard: NSPasteboard) -> Data? {
-        if let png = pasteboard.data(forType: .png) { return png }
-        guard let tiff = pasteboard.data(forType: .tiff),
-              let rep = NSBitmapImageRep(data: tiff) else { return nil }
-        return rep.representation(using: .png, properties: [:])
+    private enum ImageRead {
+        case absent
+        case pending
+        case rejected
+        case ready(Data)
+    }
+
+    static let maxImagePixels = 40_000_000
+    static let maxEncodedImageBytes = 25 * 1_024 * 1_024
+    /// The pasteboard API has already materialized the String by the time it is
+    /// returned, but refusing very large values prevents retaining/rendering
+    /// up to forty attacker-controlled copies in clipboard history.
+    static let maxRetainedTextBytes = 1 * 1_024 * 1_024
+
+    /// Multiplication is expressed as division so malicious dimensions cannot
+    /// overflow `Int` and wrap back into the accepted range.
+    static func imageDimensionsAreSafe(width: Int, height: Int) -> Bool {
+        ImagePolicy.dimensionsAreSafe(width: width, height: height, maxPixels: maxImagePixels)
+    }
+
+    private static func imageDataIsSafe(_ data: Data) -> Bool {
+        ImagePolicy.accepts(data, maxBytes: maxEncodedImageBytes, maxPixels: maxImagePixels)
+    }
+
+    /// Screenshots land as PNG; other apps often offer only TIFF. A declared
+    /// type with no bytes is pending (Continuity); bytes that violate policy
+    /// are rejected immediately and are never retried as if they were late.
+    private func imageFromPasteboard(_ pasteboard: NSPasteboard) -> ImageRead {
+        guard pasteboard.availableType(from: [.png, .tiff]) != nil else { return .absent }
+        var receivedBytes = false
+        if let png = pasteboard.data(forType: .png) {
+            receivedBytes = true
+            if Self.imageDataIsSafe(png) { return .ready(png) }
+        }
+        if let tiff = pasteboard.data(forType: .tiff) {
+            receivedBytes = true
+            if Self.imageDataIsSafe(tiff),
+               let rep = NSBitmapImageRep(data: tiff),
+               let png = rep.representation(using: .png, properties: [:]),
+               Self.imageDataIsSafe(png) {
+                return .ready(png)
+            }
+        }
+        return receivedBytes ? .rejected : .pending
+    }
+
+    private func recordText(from pasteboard: NSPasteboard) {
+        guard let raw = pasteboard.string(forType: .string),
+              let string = Self.textAcceptedForHistory(raw) else { return }
+        record(ClipItem(payload: .text(string), date: Date()))
+    }
+
+    static func textAcceptedForHistory(_ string: String) -> String? {
+        guard !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              string.utf8.count <= maxRetainedTextBytes else { return nil }
+        return string
     }
 
     private func record(_ item: ClipItem) {

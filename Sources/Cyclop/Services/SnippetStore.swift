@@ -67,6 +67,7 @@ struct Snippet: Identifiable, Codable, Equatable {
 /// is closer at the time. Both edit the same list.
 @MainActor
 final class SnippetStore: ObservableObject {
+    static let maxFileBytes = 4 * 1_024 * 1_024
     @Published private(set) var items: [Snippet] = []
     @Published var query = ""
     /// True when the file exists but cannot be parsed — a hand edit left it
@@ -95,16 +96,24 @@ final class SnippetStore: ObservableObject {
 
     init(file: URL = Support.file("snippets.json")) {
         self.file = file
+        Support.protectFileIfPresent(at: file)
     }
 
     /// Re-read on every visit to the tab. The file is edited from outside the
     /// app, so the only sensible moment to trust what is in memory is the
     /// moment before it is shown.
     func reload() {
-        guard let data = try? Data(contentsOf: file) else {
+        let data: Data
+        do {
+            data = try Support.readPrivate(file, maxBytes: Self.maxFileBytes)
+        } catch where Support.isMissingFileError(error) {
             // No file is an honest empty list, and writing one is safe.
             items = []
             fileBroken = false
+            return
+        } catch {
+            fileBroken = true
+            NSLog("Cyclop: snippets.json is not readable: \(error.localizedDescription)")
             return
         }
         do {
@@ -210,7 +219,11 @@ final class SnippetStore: ObservableObject {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
         do {
-            try encoder.encode(items).write(to: file, options: .atomic)
+            try Support.writePrivate(
+                encoder.encode(items),
+                to: file,
+                maxBytes: Self.maxFileBytes
+            )
         } catch {
             NSLog("Cyclop: cannot write snippets.json: \(error.localizedDescription)")
         }
@@ -233,7 +246,7 @@ final class SnippetStore: ObservableObject {
     /// state `reload()` already treats as a valid, empty file.
     func reveal() {
         if !FileManager.default.fileExists(atPath: file.path) {
-            try? Data("[]".utf8).write(to: file)
+            try? Support.writePrivate(Data("[]".utf8), to: file)
         }
         NSWorkspace.shared.activateFileViewerSelecting([file])
     }

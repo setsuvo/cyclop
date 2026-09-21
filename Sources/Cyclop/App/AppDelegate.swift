@@ -126,7 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let privacy = controller?.privacy,
               let raw = sender.representedObject as? String,
               let section = PrivacyMode.Section(rawValue: raw) else { return }
-        privacy.setCovering(section, !privacy.covers(section))
+        privacy.setCovering(section, !privacy.isEnabled(section))
         refreshPrivacyItems()
     }
 
@@ -138,7 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         privacyItem?.state = privacy.coversAll ? .on : (privacy.coversAny ? .mixed : .off)
         privacyAllItem?.state = privacy.coversAll ? .on : .off
         for (section, item) in privacySectionItems {
-            item.state = privacy.covers(section) ? .on : .off
+            item.state = privacy.isEnabled(section) ? .on : .off
         }
     }
 }
@@ -165,4 +165,3 @@ extension Bundle {
         (infoDictionary?["CFBundleShortVersionString"] as? String) ?? "dev"
     }
 }
-

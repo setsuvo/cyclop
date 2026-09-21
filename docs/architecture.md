@@ -67,10 +67,15 @@ panel is free to collapse. The keyboard comes back with a click on the field,
 caught in the window's `sendEvent`: a gesture on `TextEditor` never fires,
 because the text view claims mouseDown before SwiftUI does.
 
-**A screenshot from the iPhone.** The Action button on the phone runs a shortcut
-of two steps: "Take Screenshot" and "Copy to Clipboard". Continuity carries the
-copy to the Mac, and the screenshot lands on the shelf. Not one tap, no cloud, no
-shared network: the link is direct, like AirDrop's, and encrypted the same way.
+**A screenshot from the iPhone.** With **Save Clipboard Images** explicitly
+enabled, the Action button on the phone can run a shortcut of two steps: "Take
+Screenshot" and "Copy to Clipboard". Continuity carries the copy to the Mac, and
+the screenshot lands on the shelf. The setting is off by default because the
+pasteboard does not say "screenshot": any PNG or TIFF copied by any app is an
+image candidate. The hardening migration resets the old serialized default to
+off once, so an upgrade also requires fresh consent; later explicit choices
+persist. Not one tap, no cloud, no shared network: the link is direct,
+like AirDrop's, and encrypted the same way.
 
 There is no shorter path, and the others were tried. Syncing through Photos would
 wait on the cloud. AirDrop cannot be aimed from a shortcut — iOS offers it only
@@ -89,6 +94,13 @@ on, because a copy made meanwhile is the newer intention, and finishing a
 superseded transfer would put the wrong thing on the shelf. If the picture never
 arrives, the text that lay beside it is recorded instead — otherwise a copy that
 merely offered an image would disappear from the history altogether.
+
+The switch is checked both before image data is read and again after a delayed
+Continuity transfer arrives. Encoded images over 25 MiB or 40 million pixels are
+refused, as are new saves once `~/Pictures/Cyclop` holds 200 files or 512 MiB.
+Nothing is evicted automatically: crossing a limit refuses the new file, and
+only the explicit clear action sends existing images to the Trash. The folder is
+created or tightened to mode `0700`; every atomic PNG write ends at `0600`.
 
 **Snippets.** Clipboard history is a queue ordered by recency, and the thing
 needed once a week is washed out of it precisely because it is rare. Snippets are
@@ -143,15 +155,26 @@ it is not meant to be edited by hand, and it is plain text. The right column is
 not decoration: the six icons on the left already fill the panel's height, and a
 seventh would not fit.
 
-**Hiding contents.** The "Hide Contents" menu bar item covers what the tabs
-show with a field of twinkling dots — for a screen-shared call, a stream, or a
-café. Enabled as a whole or per section — clipboard, snippets, calendar, notes —
-and off by default. A hidden row is not drawn at all: this is no blur, there is
-nothing in the frame to recover, and the field covers the whole row rather than
-tracing the glyphs — a silhouette would give away the length. The eye on a row
-uncovers it for a while, folding the panel covers everything again, and copying
-works over the cover — the hidden can be used without being shown. Proposed and
-written by the community (#16, PR #17).
+**Hiding contents.** The "Hide Contents" menu bar item replaces selected panes
+with a field of twinkling dots — for a screen-shared call, a stream, or a café.
+"All" means every content tab: Music, Shelf, Clipboard, Snippets, Calendar,
+Translate, Currency, Notes and Teleprompter. Settings is deliberately excluded,
+so the mode cannot hide the way out of itself. Individual content tabs can still
+be selected independently.
+
+The exact four-section set that meant "All" in the previous release expands to
+all nine sections during migration. Any partial old selection remains partial,
+so an update neither exposes tabs under an old "All" promise nor silently opts a
+custom selection into newly added sections.
+
+The safe pane is chosen by a conditional branch: this is no blur and no overlay
+with the real view still drawn below it. Header metadata such as the media source,
+item counts and the next-meeting countdown follows the same decision. Temporary reveals are cleared whenever the
+panel folds; on a multi-display Mac, a reveal is scoped to the panel that asked
+for it and never uncovers another display. The choice normally outlives launches in `config.json`; if that file
+exists but cannot be decoded, the privacy state fails closed by covering every
+content tab and the broken file is not overwritten. Proposed and first written
+by the community (#16, PR #17).
 
 **Languages.** Russian and English; macOS picks by the user's preferred language
 list. The keys in the tables are the English text, so a string without a
@@ -271,7 +294,10 @@ anything. The source name comes from the pid of the session's owner.
 **The fallback.** If the helper fails to start three times in a row (perl
 removed, the daemon closed to platform binaries too), `MediaController` switches
 to scripting Apple Music and Spotify over AppleScript — and then, and only then,
-the system asks for Automation.
+the system asks for Automation. Spotify artwork is the fallback's sole network
+read: only `https://i.scdn.co/image/…` is accepted, redirects are checked against
+the same rule, the response is capped at 8 MiB and the decoded image at 20
+million pixels before it reaches the UI.
 
 **The cost of sitting still.** At rest the app does nothing, and that is
 measurable: with the pointer still and the panel collapsed it sits at 0.0 % CPU,

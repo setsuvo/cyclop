@@ -55,13 +55,26 @@ final class TeleprompterStore: ObservableObject {
     /// Height of the window the text scrolls through, also from the pane.
     var viewportHeight: CGFloat = 0
 
-    private static let file = Support.file("teleprompter.txt")
+    static let maxFileBytes = 2 * 1_024 * 1_024
+    private static let defaultFile = Support.file("teleprompter.txt")
+    private let file: URL
+    private var fileBroken = false
 
     private var timer: Timer?
     private let saves = DebouncedWrite()
 
-    init() {
-        script = (try? String(contentsOf: Self.file, encoding: .utf8)) ?? ""
+    init(file: URL = TeleprompterStore.defaultFile) {
+        self.file = file
+        do {
+            let data = try Support.readPrivate(file, maxBytes: Self.maxFileBytes)
+            script = String(data: data, encoding: .utf8) ?? ""
+        } catch where Support.isMissingFileError(error) {
+            script = ""
+        } catch {
+            script = ""
+            fileBroken = true
+            NSLog("Cyclop: teleprompter.txt is not readable: \(error.localizedDescription)")
+        }
         // Reading the file above went through `script`'s observer and armed a
         // save of what was just loaded. Harmless, but worth not doing.
         saves.cancel()
@@ -135,17 +148,18 @@ final class TeleprompterStore: ObservableObject {
     func flush() { saves.flush() }
 
     private func persist() {
+        guard !fileBroken else { return }
         do {
-            try script.write(to: Self.file, atomically: true, encoding: .utf8)
+            try Support.writePrivate(script, to: file, maxBytes: Self.maxFileBytes)
         } catch {
             NSLog("Cyclop: cannot write teleprompter.txt: \(error.localizedDescription)")
         }
     }
 
     static func reveal() {
-        if !FileManager.default.fileExists(atPath: file.path) {
-            try? "".write(to: file, atomically: true, encoding: .utf8)
+        if !FileManager.default.fileExists(atPath: defaultFile.path) {
+            try? Support.writePrivate("", to: defaultFile)
         }
-        NSWorkspace.shared.activateFileViewerSelecting([file])
+        NSWorkspace.shared.activateFileViewerSelecting([defaultFile])
     }
 }

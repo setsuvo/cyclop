@@ -25,7 +25,7 @@
 "Full-Height Notch Without a Cutout" = "Высокая чёлка на экранах без выреза";
 
 "Screenshots" = "Скриншоты";
-"Save Clipboard Screenshots" = "Сохранять скриншоты из буфера";
+"Save Clipboard Images" = "Сохранять изображения из буфера";
 "Watch Screenshots Folder" = "Отслеживать папку снимков";
 "Choose Screenshots Folder" = "Выбор папки для снимков";
 "Cyclop will watch this folder for new screenshots and add them to the shelf." = "Cyclop будет следить за этой папкой и класть новые снимки на полку.";
@@ -38,6 +38,7 @@
 "Configuration" = "Конфигурация";
 "Show Config File" = "Показать файл конфигурации";
 "config.json is broken — click to open; nothing is overwritten" = "config.json не читается — нажми, чтобы открыть; поверх ничего не пишется";
+"config.json could not be saved — privacy-safe fallbacks remain active" = "config.json не удалось сохранить — безопасные ограничения остаются включены";
 
 "Cyclop" = "Cyclop";
 "Quit Cyclop" = "Выйти из Cyclop";

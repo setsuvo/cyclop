@@ -37,6 +37,13 @@ final class MediaController: ObservableObject {
     /// Where we asked the player to jump, and when — see `apply`.
     private var pendingSeek: (target: TimeInterval, at: Date)?
     private var ticker: Timer?
+    private var artworkTask: Task<Void, Never>?
+    /// Invalidates AppleScript callbacks that cannot themselves be cancelled.
+    private var lifecycleGeneration = 0
+    /// Separately orders overlapping state reads without invalidating artwork
+    /// for the same track.
+    private var stateRequestGeneration = 0
+    private var isStarted = false
     private var observers: [Any] = []
     /// Whether the panel is open — the ticker below runs only then.
     private var isActive = false
@@ -44,12 +51,20 @@ final class MediaController: ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
+        isStarted = true
+        lifecycleGeneration &+= 1
+        feedAvailable = true
         feed.onUpdate = { [weak self] snapshot in self?.apply(snapshot) }
         feed.onUnavailable = { [weak self] in self?.switchToScriptingFallback() }
         feed.start()
     }
 
     func stop() {
+        isStarted = false
+        lifecycleGeneration &+= 1
+        stateRequestGeneration &+= 1
+        artworkTask?.cancel()
+        artworkTask = nil
         feed.stop()
         observers.forEach { DistributedNotificationCenter.default().removeObserver($0) }
         observers.removeAll()
@@ -123,6 +138,7 @@ final class MediaController: ObservableObject {
     // MARK: - Feed
 
     private func apply(_ snapshot: NowPlayingFeed.Snapshot) {
+        guard isStarted else { return }
         guard !snapshot.isEmpty else { return clear() }
 
         let key = "\(snapshot.title)|\(snapshot.artist)|\(snapshot.album)"
@@ -152,6 +168,8 @@ final class MediaController: ObservableObject {
         updateTicker()
 
         if let data = snapshot.artwork {
+            artworkTask?.cancel()
+            artworkTask = nil
             artworkKey = key
             decodeArtwork(data, for: key)
         } else if artworkKey != key {
@@ -165,8 +183,13 @@ final class MediaController: ObservableObject {
     /// JPEG decoding on the main thread is what makes a track change stutter,
     /// so it happens off it and the finished image is handed back.
     private func decodeArtwork(_ data: Data, for key: String) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            guard let rep = NSBitmapImageRep(data: data), let cgImage = rep.cgImage else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard ImagePolicy.accepts(
+                data,
+                maxBytes: 4 * 1_024 * 1_024,
+                maxPixels: 20_000_000,
+                maxFrames: 1
+            ), let rep = NSBitmapImageRep(data: data), let cgImage = rep.cgImage else { return }
             let image = NSImage(
                 cgImage: cgImage,
                 size: NSSize(width: rep.pixelsWide, height: rep.pixelsHigh)
@@ -179,6 +202,8 @@ final class MediaController: ObservableObject {
     }
 
     private func clear() {
+        artworkTask?.cancel()
+        artworkTask = nil
         activeApp = nil
         track = nil
         artwork = nil
@@ -194,7 +219,7 @@ final class MediaController: ObservableObject {
     // MARK: - Fallback: scriptable players only
 
     private func switchToScriptingFallback() {
-        guard feedAvailable else { return }
+        guard isStarted, feedAvailable else { return }
         feedAvailable = false
         // Nothing reports supported commands on this route, and the two apps it
         // drives both skip — so the arrows come back rather than staying dim
@@ -217,8 +242,14 @@ final class MediaController: ObservableObject {
     }
 
     private func refreshFromPlayers() {
+        guard isStarted else { return }
+        stateRequestGeneration &+= 1
+        let stateGeneration = stateRequestGeneration
+        let lifecycle = lifecycleGeneration
         PlayerBridge.currentState { [weak self] state in
-            guard let self else { return }
+            guard let self, self.isStarted,
+                  self.lifecycleGeneration == lifecycle,
+                  self.stateRequestGeneration == stateGeneration else { return }
             guard let state else { return self.clear() }
 
             self.activeApp = state.app
@@ -230,10 +261,13 @@ final class MediaController: ObservableObject {
             self.updateTicker()
 
             guard self.artworkKey != state.key else { return }
+            self.artworkTask?.cancel()
             self.artworkKey = state.key
             self.artwork = nil
-            PlayerBridge.artwork(for: state) { [weak self] image in
-                guard let self, self.artworkKey == state.key else { return }
+            self.artworkTask = PlayerBridge.artwork(for: state) { [weak self] image in
+                guard let self, self.isStarted,
+                      self.lifecycleGeneration == lifecycle,
+                      self.artworkKey == state.key else { return }
                 self.artwork = image
             }
         }

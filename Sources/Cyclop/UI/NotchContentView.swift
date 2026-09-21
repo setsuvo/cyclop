@@ -9,6 +9,10 @@ struct NotchContentView: View {
     private var isOpen: Bool { panel.isActive }
     private var size: CGSize { panel.bodySize }
     private var topRadius: CGFloat { isOpen ? Theme.openTopRadius : Theme.collapsedTopRadius }
+    private var currentPrivacySection: PrivacyMode.Section? { vm.tab.privacySection }
+    private var isCurrentPaneCovered: Bool {
+        currentPrivacySection.map(panel.privacyCovers) ?? false
+    }
 
     /// Whether the shape is painted at all.
     ///
@@ -65,6 +69,11 @@ struct NotchContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(Theme.openAnimation, value: isOpen)
         .animation(Theme.paneAnimation, value: vm.tab)
+        .onChange(of: isCurrentPaneCovered) { _, covered in
+            // Removing a focused field from the view tree must also give the
+            // keyboard back; otherwise the now-empty panel remains key.
+            if covered { panel.wantsKeyboard = false }
+        }
     }
 
     // MARK: - Header
@@ -89,7 +98,7 @@ struct NotchContentView: View {
             Spacer(minLength: 0)
             Color.clear.frame(width: panel.geometry.notchSize.width, height: 1)
             Spacer(minLength: 0)
-            if isOpen {
+            if isOpen, !isCurrentPaneCovered {
                 trailing
                     .padding(.trailing, 16)
                     .transition(.opacity)
@@ -165,7 +174,7 @@ struct NotchContentView: View {
         // Content is replaced in place — no travel. The rail is vertical and
         // the panes are unrelated, so a direction would only be decoration.
         ZStack {
-            pane
+            securedPane
                 .id(vm.tab)
                 .transition(.asymmetric(
                     insertion: .opacity
@@ -178,6 +187,66 @@ struct NotchContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
+    }
+
+    /// A covered pane is an alternate branch, not content with an overlay or
+    /// zero opacity. The sensitive controls, text and accessibility nodes do
+    /// not exist until the user explicitly uncovers this section.
+    @ViewBuilder
+    private var securedPane: some View {
+        if let section = currentPrivacySection {
+            if panel.privacyCovers(section) {
+                privacyCover(for: section)
+            } else {
+                pane
+                    .overlay(alignment: .bottomTrailing) {
+                        if vm.privacy.isEnabled(section) {
+                            Button { panel.coverPrivacy(section) } label: {
+                                Image(systemName: "eye.slash.fill")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(Color.white.opacity(0.85))
+                                    .padding(7)
+                                    .background(Circle().fill(Color.black.opacity(0.72)))
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.default)
+                            .help(localized("Hide"))
+                            .padding(6)
+                        }
+                    }
+            }
+        } else {
+            pane
+        }
+    }
+
+    private func privacyCover(for section: PrivacyMode.Section) -> some View {
+        ZStack {
+            SpoilerField(density: 0.22, seed: 0xD1B54A32D192ED03)
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .accessibilityHidden(true)
+
+            Button { panel.revealPrivacy(section) } label: {
+                VStack(spacing: 6) {
+                    Image(systemName: "eye")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(localized("Show"))
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .foregroundStyle(Color.white.opacity(0.9))
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Color.black.opacity(0.75))
+                )
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(.default)
+            .help(localized("Show"))
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(localized("Hidden"))
     }
 
     @ViewBuilder

@@ -92,8 +92,11 @@ struct NotchGeometry {
     static var showsOnAllDisplays: Bool {
         get { ConfigStore.shared.showOnAllDisplays }
         set {
+            let previous = ConfigStore.shared.showOnAllDisplays
             ConfigStore.shared.showOnAllDisplays = newValue
-            NotificationCenter.default.post(name: settingsChanged, object: nil)
+            if ConfigStore.shared.showOnAllDisplays != previous {
+                NotificationCenter.default.post(name: settingsChanged, object: nil)
+            }
         }
     }
 

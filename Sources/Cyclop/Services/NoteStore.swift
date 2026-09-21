@@ -25,11 +25,15 @@ final class NoteStore: ObservableObject {
     /// choice survives the pane being unmounted with the panel.
     @Published var selected: Note.ID?
 
-    private static let file = Support.file("notes.json")
+    static let maxFileBytes = 4 * 1_024 * 1_024
+    private static let defaultFile = Support.file("notes.json")
+    private let file: URL
+    private var fileBroken = false
 
     private let saves = DebouncedWrite()
 
-    init() {
+    init(file: URL = NoteStore.defaultFile) {
+        self.file = file
         load()
     }
 
@@ -72,10 +76,16 @@ final class NoteStore: ObservableObject {
     // MARK: - Persistence
 
     private func load() {
-        guard let data = try? Data(contentsOf: Self.file),
-              let stored = try? JSONDecoder().decode([Note].self, from: data) else { return }
-        notes = stored
-        selected = notes.first?.id
+        do {
+            let data = try Support.readPrivate(file, maxBytes: Self.maxFileBytes)
+            notes = try JSONDecoder().decode([Note].self, from: data)
+            selected = notes.first?.id
+        } catch where Support.isMissingFileError(error) {
+            return
+        } catch {
+            fileBroken = true
+            NSLog("Cyclop: notes.json is not readable: \(error.localizedDescription)")
+        }
     }
 
     /// A moment after the typing pauses, not on every keystroke: the text
@@ -88,8 +98,13 @@ final class NoteStore: ObservableObject {
     func flush() { saves.flush() }
 
     private func persist() {
+        guard !fileBroken else { return }
         do {
-            try JSONEncoder().encode(notes).write(to: Self.file, options: .atomic)
+            try Support.writePrivate(
+                JSONEncoder().encode(notes),
+                to: file,
+                maxBytes: Self.maxFileBytes
+            )
         } catch {
             NSLog("Cyclop: cannot write notes.json: \(error.localizedDescription)")
         }

@@ -9,14 +9,15 @@ import AppKit
 /// same everywhere and stay in `NotchViewModel`.
 @MainActor
 final class PanelState: ObservableObject {
-    @Published var isOpen = false { didSet { notify(isOpen != oldValue) } }
-    @Published var isDropTargeted = false { didSet { notify(isDropTargeted != oldValue) } }
+    @Published var isOpen = false { didSet { stateChanged(isOpen != oldValue) } }
+    @Published var isDropTargeted = false { didSet { stateChanged(isDropTargeted != oldValue) } }
     /// Whether this screen's panel holds the keyboard. Per screen because only
     /// one window can be key, and it is this one the user clicked into.
     @Published var wantsKeyboard = false { didSet { notify(wantsKeyboard != oldValue) } }
 
     let geometry: NotchGeometry
     private let vm: NotchViewModel
+    private let privacySession = UUID()
 
     /// Raised when any of the three above moves, so whoever owns every screen
     /// can recompute what the shared model needs to know about the panels.
@@ -50,6 +51,14 @@ final class PanelState: ObservableObject {
     /// Size of the visible body for the current state.
     var bodySize: CGSize { isActive ? openBodySize : geometry.collapsedSize }
 
+    /// Keyboard ownership is also per display now that privacy reveals are.
+    /// A pane revealed elsewhere must not make this panel's safe branch key.
+    var clickTakesKeyboard: Bool {
+        if let section = vm.tab.privacySection, privacyCovers(section) { return false }
+        return vm.tab.needsKeyboard
+            || (vm.tab == .teleprompter && vm.teleprompter.script.isEmpty)
+    }
+
     /// Hover and click both land here. A tab that types takes the keyboard
     /// either way: showing a field one cannot type into is worse than briefly
     /// dimming the caret of the window underneath, and the dwell threshold on
@@ -59,7 +68,35 @@ final class PanelState: ObservableObject {
     /// changes what every screen shows, but only this one starts listening.
     func select(_ tab: NotchViewModel.Tab) {
         vm.tab = tab
-        if tab.needsKeyboard { wantsKeyboard = true }
+        if tab.needsKeyboard {
+            // A covered pane has no field in the view tree. Do not make the
+            // panel key until the user explicitly reveals it.
+            wantsKeyboard = clickTakesKeyboard
+        }
+    }
+
+    func privacyCovers(_ section: PrivacyMode.Section) -> Bool {
+        vm.privacy.covers(section, for: privacySession)
+    }
+
+    func revealPrivacy(_ section: PrivacyMode.Section) {
+        vm.privacy.reveal(section, for: privacySession)
+    }
+
+    func coverPrivacy(_ section: PrivacyMode.Section) {
+        vm.privacy.cover(section, for: privacySession)
+    }
+
+    /// Called both on an ordinary fold and when a display disappears while its
+    /// panel is open.
+    func endPrivacySession() {
+        vm.privacy.coverEverything(for: privacySession)
+    }
+
+    private func stateChanged(_ changed: Bool) {
+        guard changed else { return }
+        if !isActive { endPrivacySession() }
+        notify(true)
     }
 
     private func notify(_ changed: Bool) {

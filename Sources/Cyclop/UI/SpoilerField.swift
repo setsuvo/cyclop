@@ -171,7 +171,7 @@ struct PrivacySwitch: View {
     @ObservedObject var privacy: PrivacyMode
     let section: PrivacyMode.Section
 
-    private var covering: Bool { privacy.covers(section) }
+    private var covering: Bool { privacy.isEnabled(section) }
 
     var body: some View {
         Button {

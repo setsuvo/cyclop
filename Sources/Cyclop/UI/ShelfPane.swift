@@ -98,6 +98,10 @@ struct ShelfPane: View {
             }
             Spacer()
             if !shelf.selection.isEmpty {
+                Button("Copy") { shelf.copySelection() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Theme.secondary)
                 Button("Deselect") { shelf.clearSelection() }
                     .buttonStyle(.plain)
                     .font(.system(size: 10, weight: .medium))

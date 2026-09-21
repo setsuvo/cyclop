@@ -12,11 +12,11 @@ files, clipboard history and your next meetings.
 ![The Cyclop panel](docs/panel.png)
 
 **[Download the latest version](https://github.com/akalikbergenov/cyclop/releases/latest)** —
-macOS 15 or newer. The first launch needs one permission granted by hand,
-[here is how](#installation).
+macOS 15 or newer. Official releases are Developer ID signed and notarised by
+Apple; no Gatekeeper workaround is required.
 
 ```
-0.0 % CPU at rest  ·  ≈40 MB + 14 MB helper  ·  3.7 MB bundle  ·  one permission, and only on a button
+0.0 % CPU at rest  ·  ≈40 MB + 14 MB helper  ·  4.2 MB bundle  ·  no normal-path permission prompt
 ```
 
 The track in the screenshot is playing in a browser tab — Cyclop reads it from
@@ -28,12 +28,12 @@ that works is below.
 | Tab | What it does |
 |---|---|
 | **Music** | Artwork, track, artist, a scrubber that seeks, prev / play-pause / next. The source is **anything**: a player, a browser tab, any app macOS itself can see |
-| **Shelf** | Drag files into the notch and they stay there until needed; drag a card out and the file goes wherever it is dropped. A click selects a card, ⌘-click selects several, and then the whole group is dragged. A screenshot taken to the clipboard is saved as a file and lands here too — including one taken on an iPhone, if you copy it there |
+| **Shelf** | Drag files into the notch and they stay there until needed; drag a card out and the file goes wherever it is dropped. A click selects a card, ⌘-click selects several, and then the whole group is dragged. Optional clipboard-image saving can put a copied PNG or TIFF here too — including one copied on an iPhone. It is off by default |
 | **Clipboard** | The last 40 copies; a click puts an entry back on the clipboard |
 | **Snippets** | A hand-kept list of what you are tired of retyping: an address, a phone number, an email. Added with a button in the panel, removed with the cross on a card; a click puts the text on the clipboard. The same list lives in `~/Library/Application Support/Cyclop/snippets.json` and can be edited there instead |
 | **Calendar** | The next meeting a week ahead: how long until it starts and a button that joins the call — Zoom, Meet, Teams and others. The rest of the meetings as a list |
 | **Translate** | Type on the left, the translation appears on the right — by itself, offline, using macOS's own facilities. English goes to Russian, Russian to English; the direction comes from the script the text is written in. macOS does not preinstall language packs, so the first time you have to download one: System Settings → General → Language & Region → "Translation Languages…" |
-| **Currency** | An amount on one side, the other currency on the other; type into either. Rates are the one thing in Cyclop that comes over the network — a public table of daily rates, fetched once an hour, and only while the tab is on |
+| **Currency** | An amount on one side, the other currency on the other; type into either. Public daily rates are fetched over HTTPS at startup and once an hour while this tab is enabled |
 | **Teleprompter** | A script that scrolls under the camera at a speed you set. The notch is the one place on the screen a teleprompter belongs: reading happens right beside the lens, so on the recording the eyes stay on the camera instead of travelling to a window below it. The panel holds itself open while the text is moving — reading a script means not touching the trackpad |
 | **Notes** | Scratch, on the right rail of icons: jot something down, come back, delete it or carry it off through the clipboard. Hovering lands with the caret ready; blank notes sweep themselves out |
 
@@ -41,7 +41,8 @@ The panel opens when the pointer reaches the notch and collapses when it leaves.
 Tabs switch on hover as well — but only if the pointer has come to rest on the
 icon: one passing through switches nothing. During a file drag the panel opens by
 itself and goes straight to the shelf. The menu bar icon toggles the panel,
-hides every tab's contents at once, and quits. The icon itself can be
+hides every content tab and its header metadata at once, and quits. Settings
+remain available so the privacy mode can be changed. The icon itself can be
 removed — ⌘-drag it off the bar, or flip the switch in Settings — and
 relaunching Cyclop brings it back.
 
@@ -87,9 +88,10 @@ more — the app's signature changed, and that is what the permission was tied
 to. The version is the first line of the menu bar menu.
 
 A build from source (`Scripts/bundle.sh`) is ad-hoc signed and is not
-notarised, so on any Mac but the one that built it the first launch goes
-through **System Settings → Privacy & Security → "Open Anyway"**. Releases do
-not have this step.
+notarised; it is distinguishable from an official release. If macOS unexpectedly
+says that an official download cannot be verified, do not bypass the warning.
+Delete it, download the current image again from the releases page, and report a
+repeatable failure through the private channel in [SECURITY.md](SECURITY.md).
 
 Releases come often, and a star does not announce them — it is a bookmark, not a
 subscription. To hear about updates: the **Watch** button at the top right →
@@ -110,8 +112,9 @@ shortcut inside. The version number comes from `Scripts/version`.
 ./Scripts/release.sh
 ```
 
-Builds the image, tags `v<version>` and creates a GitHub release with the `.dmg`
-attached. The notes are two parts: a few lines written by hand, kept in
+Validates the release, tags `v<version>` and pushes the tag. The GitHub Actions
+release workflow then builds, signs, notarizes and publishes the `.dmg`. The
+notes are two parts: a few lines written by hand, kept in
 `docs/releases/<version>.md`, followed by the commit list GitHub assembles. The
 script refuses to run without the hand-written part — a list of commits answers
 "what changed in the code", while whoever arrives is asking "what does this give
@@ -127,15 +130,16 @@ that is the link to hand to people instead of a file.
 
 ## Permissions
 
-**None** — until you open the calendar. The app asks for no Automation, no
-Accessibility, no Screen Recording, and needs nothing configured in the browser.
-The pointer position is read through `NSEvent.mouseLocation`, the clipboard
-through the public `NSPasteboard`, Now Playing through a helper (see below).
+**None in normal operation** — until you explicitly request Calendar access.
+The normal Now Playing path asks for no Automation or Accessibility, Screen
+Recording is never used, and the browser needs no configuration. The pointer
+position is read through `NSEvent.mouseLocation`, the clipboard through the
+public `NSPasteboard`, Now Playing through a helper (see below).
 
-Calendar access is the only permission Cyclop ever requests. It is needed by the
-Calendar tab alone, and the system dialog appears neither at launch nor when the
+Calendar access is the only permission requested on the normal path. It is needed
+by that tab alone, and the system dialog appears neither at launch nor when the
 tab is opened, but on an explicit press of a button on a screen that explains
-why. Don't use the calendar and the app stays without permissions entirely.
+why. Don't use the calendar and normal operation stays without permissions.
 
 A file put on the shelf from Downloads, Documents or the Desktop is the one thing
 macOS asks about separately, and it asks when the shelf is opened, not at launch.
@@ -144,6 +148,57 @@ Refusing breaks nothing: the card stays, just without a preview.
 Permissions would only be needed by the fallback path, if the main one ever stops
 working: Automation for Apple Music and Spotify, and Accessibility for the media
 keys.
+
+## Privacy and local data
+
+There is no telemetry, analytics or crash reporting. Cyclop has two outbound
+network paths:
+
+- With the Currency tab enabled (the default), it fetches a public currency list
+  and the selected base currency's rates at app startup, then refreshes hourly,
+  when the tab opens and when the base changes. It tries `cdn.jsdelivr.net`, then
+  `latest.currency-api.pages.dev`. The provider receives normal HTTPS metadata
+  such as the IP address, request time and requested path; no clipboard, file,
+  note or calendar content is attached. Responses are capped at 2 MiB.
+- If the normal macOS Now Playing path fails and the Spotify fallback is active,
+  Cyclop may fetch an artwork URL supplied by Spotify. Only
+  `https://i.scdn.co/image/…` is allowed, redirects are revalidated, the response
+  is capped at 8 MiB and the decoded image at 20 million pixels. That image host
+  receives normal HTTPS metadata and the requested artwork path. The normal path
+  receives artwork from macOS and makes no such request.
+
+Clipboard history is memory-only and entries marked concealed, transient or
+auto-generated are ignored. Clipboard-image saving is opt-in; upgrading from a
+pre-hardening version resets the old setting to off once, so consent must be
+given again. When you explicitly enable **Save Clipboard Images**, any PNG or
+TIFF image on the clipboard—not only a screenshot—is converted to PNG, stored in
+`~/Pictures/Cyclop` (or the app-support fallback if Pictures cannot be created),
+and added to the shelf. Nothing is removed automatically. Each encoded image is
+limited to 25 MiB and 40 million pixels; the folder is limited to 200 files and
+512 MiB. A new save is refused once a limit is reached, and Settings can send the
+saved images to the Trash. The image folder is owner-only (`0700`) and saved PNGs
+are `0600`.
+
+Cyclop's persistent text is not encrypted. Snippets, notes, the teleprompter
+script and portable settings live respectively in `snippets.json`, `notes.json`,
+`teleprompter.txt` and `config.json` under
+`~/Library/Application Support/Cyclop`. The shelf keeps absolute paths to the
+original files in the app's preferences (`UserDefaults`, key `shelf.urls`); it
+does not copy files dropped onto it. The app-support directory is owner-only
+(`0700`) and these files are `0600`, but a process running as the same macOS user
+or a backup can still read them.
+
+**Hide Contents → All** covers Music, Shelf, Clipboard, Snippets, Calendar,
+Translate, Currency, Notes and Teleprompter, including sensitive metadata in the
+panel header. Settings stay visible. Covered panes are replaced in the view tree,
+not blurred or drawn beneath an overlay. A temporary reveal applies only to the
+display where it was requested and resets when that panel folds. If `config.json`
+is unreadable, privacy fails closed and covers all
+content tabs. On upgrade, the old four-section “All” selection expands to all
+nine content tabs; a partial selection stays partial. This protects screen
+sharing; it does not encrypt data on disk.
+
+The complete data inventory is in [SECURITY.md](SECURITY.md).
 
 ## How it works
 
@@ -161,11 +216,11 @@ costs — eighteen notes on decisions the code does not show:
 - Apple has deprecated the scripting runtimes (perl among them) and will remove
   them from the system one day. The helper survives exactly until that moment.
 - The shelf references files rather than copying them: move the original and the
-  card disappears on the next launch. The exception is clipboard screenshots,
-  which are saved into `~/Pictures/Cyclop` and are never deleted automatically,
-  even when the card leaves the shelf. Only the user clears that folder: the
-  “Clear Screenshots Folder” in Settings sends its contents to the Trash —
-  a hand too, not a schedule.
+  card disappears on the next launch. The exception is optional clipboard-image
+  saving: when enabled, any copied PNG or TIFF is saved into `~/Pictures/Cyclop`.
+  The folder has count and size limits and refuses a new save when one is
+  reached; it never removes old images automatically. The clear action in
+  Settings sends its contents to the Trash.
 - Entries typed `org.nspasteboard.ConcealedType` (password managers) never enter
   the clipboard history.
 - The join button appears only if the call link is in the event itself — in the
@@ -204,14 +259,14 @@ Sources/Cyclop
 │   ├── PlayerBridge.swift     fallback: AppleScript + media keys
 │   ├── ShelfStore.swift
 │   ├── ClipboardStore.swift
-│   ├── ScreenshotVault.swift  clipboard screenshots onto disk
+│   ├── ScreenshotVault.swift  opted-in clipboard images onto disk
 │   ├── SnippetStore.swift     snippets: reading and writing snippets.json
 │   ├── ConfigStore.swift      settings: reading and writing config.json
 │   ├── Support.swift          ~/Library/Application Support/Cyclop
 │   ├── DebouncedWrite.swift   writes to disk no more often than needed
 │   ├── NoteStore.swift        scratch notes: notes.json
 │   ├── Translator.swift       Translation.framework, direction by script
-│   ├── CurrencyStore.swift    rates over the network, the one tab that has any
+│   ├── CurrencyStore.swift    public rates over HTTPS
 │   ├── TeleprompterStore.swift the script and where reading it has got to
 │   ├── ScreenshotFolderWatcher.swift  screenshots saved to disk, onto the shelf
 │   └── CalendarStore.swift    EventKit: next meetings and the call link
@@ -225,8 +280,8 @@ Sources/CyclopMediaHelper
 
 The rules are short and live in [CONTRIBUTING.md](CONTRIBUTING.md): what gets
 taken, what does not, and what to check before sending. The main one is that
-the app works without macOS permissions and without the network, and a change
-that alters this is a separate conversation.
+the app works without macOS permissions and adds no new network access without
+an explicit security discussion.
 
 What the app reads, what it keeps and where, where it goes on the network —
 [SECURITY.md](SECURITY.md). The channel for vulnerabilities is there too:
