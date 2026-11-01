@@ -145,7 +145,7 @@ jobs:
           )
 
       - name: Передать кандидат без секретов
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Cyclop-${{ needs.validate_release.outputs.version }}-unsigned-candidate
           if-no-files-found: error
@@ -356,7 +356,7 @@ jobs:
           fi
 
       - name: Передать подписанный релиз
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Cyclop-${{ needs.validate_release.outputs.version }}-signed-release
           if-no-files-found: error
@@ -452,7 +452,7 @@ jobs:
           shasum -a 256 "Cyclop-$VERSION.dmg" > SHA256SUMS
 
       - name: Сохранить пробный образ
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Cyclop-${{ steps.metadata.outputs.version }}-dry-run
           if-no-files-found: error
