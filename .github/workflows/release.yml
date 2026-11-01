@@ -175,7 +175,7 @@ jobs:
             || { echo "::error::тег изменился после проверки происхождения"; exit 1; }
 
       - name: Скачать неподписанный кандидат
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Cyclop-${{ needs.validate_release.outputs.version }}-unsigned-candidate
           path: release-input
@@ -385,7 +385,7 @@ jobs:
             || { echo "::error::тег изменился после подписи"; exit 1; }
 
       - name: Скачать подписанный релиз
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Cyclop-${{ needs.validate_release.outputs.version }}-signed-release
           path: release-input
